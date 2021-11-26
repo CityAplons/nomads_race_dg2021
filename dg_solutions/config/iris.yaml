@@ -1,0 +1,18 @@
+pids: {
+  "MC_ROLL_P": 6.0,
+  "MC_ROLLRATE_K": 2.0,
+  "MC_ROLLRATE_P": 0.2,
+  "MC_ROLLRATE_I": 0.4,
+  "MC_ROLLRATE_D": 0.0016,
+  "MC_PITCH_P": 6.0, 
+  "MC_PITCHRATE_K": 1.85,
+  "MC_PITCHRATE_P": 0.2, 
+  "MC_PITCHRATE_I": 0.15,
+  "MC_PITCHRATE_D": 0.0018,
+  "MC_YAW_P": 2.8,
+  "MC_YAWRATE_K": 2.7,
+  "MC_YAWRATE_P": 0.2,
+  "MC_YAWRATE_I": 0.2,
+  "MC_YAWRATE_D": 0.0, 
+  "MPC_XY_P": 0.8
+}
