@@ -3,6 +3,7 @@ import time
 from threading import Thread
 
 from utils.helpers import NPPose, euclidean_distance
+from utils.LQR import LQRController
 
 class MavrosControl:
     from geometry_msgs.msg import TwistStamped, PoseStamped
@@ -103,12 +104,10 @@ class MavrosControl:
             self.pt.type_mask = (
                 self.pt.IGNORE_VX | self.pt.IGNORE_VY | self.pt.IGNORE_VZ | 
                 self.pt.IGNORE_AFX | self.pt.IGNORE_AFY | self.pt.IGNORE_AFZ | 
-                self.pt.IGNORE_YAW_RATE)
-                # self.pt.IGNORE_YAW | self.pt.IGNORE_YAW_RATE)
+                self.pt.IGNORE_YAW | self.pt.IGNORE_YAW_RATE)
             self.pt.position.x = position[0]
             self.pt.position.y = position[1]
             self.pt.position.z = position[2]
-            self.pt.yaw = 0.523599
         else:
             self.rospy.logwarn("Position control in velocity mode")
 
@@ -145,7 +144,7 @@ class MavrosControl:
                     continue
                 break
     
-    ### LOCAL_GLOBAL coords switched | hate airsim (me too)
+    ### LOCAL_GLOBAL coords switched | hate airsim
     def gpose_cb(self, msg):
         pose = msg.pose.pose
         self.local_pose = NPPose(pose)
@@ -187,6 +186,7 @@ class dronePositionController(MavrosControl):
             "land": self.__st_land,
             "disarm": self.__st_disarm
         }
+        self.lqr = LQRController(as_linear=False)
         self.drone_state = "ground"
         self.is_armed = False
         self.is_arrived = False
@@ -238,12 +238,20 @@ class dronePositionController(MavrosControl):
 
     def __st_pub_pos(self):
         d = euclidean_distance(self.get_global_position(), self.get_target_position())
-        if d <= 0.6:
+
+        if d <= 0.3:
             self.is_arrived = True
         else:
             self.is_arrived = False
         if not self.ignore_sm:
+            # self.__update_lqr()
             self.pub_pt.publish(self.pt)
+
+    def __update_lqr(self):
+        if self.global_pose.position[2] > 0.1:
+            to_fly, to_yaw = self.lqr.step(self.get_target_position(), self.get_target_yaw())
+            self.set_position(to_fly)
+            self.set_yaw(to_yaw)
 
     def __arming(self, to_arm):
         self.is_armed = to_arm
