@@ -1,3 +1,2 @@
-solution/records/
-sim_worlds/
-NVIDIA-*
+__pycache__/
+*.pyc
