@@ -14,5 +14,7 @@ pids: {
   "MC_YAWRATE_P": 0.2,
   "MC_YAWRATE_I": 0.2,
   "MC_YAWRATE_D": 0.0, 
-  "MPC_XY_P": 0.8
+  "MPC_XY_P": 0.8,
+  "MPC_XY_CRUISE": 10.0,
+  "MPC_VEL_MANUAL": 10.0
 }

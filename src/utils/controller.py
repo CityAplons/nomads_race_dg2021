@@ -2,8 +2,7 @@ import numpy as np
 import time
 from threading import Thread
 
-from utils.helpers import NPPose, euclidean_distance
-from utils.LQR import LQRController
+from utils.helpers import NPPose, PIDController, euclidean_distance, EulerFromQuaternion
 
 class MavrosControl:
     from geometry_msgs.msg import TwistStamped, PoseStamped
@@ -66,9 +65,9 @@ class MavrosControl:
                 self.pt.IGNORE_AFX | 
                 self.pt.IGNORE_AFY | 
                 self.pt.IGNORE_AFZ | 
-                self.pt.IGNORE_YAW |
-                self.pt.IGNORE_YAW_RATE
+                self.pt.IGNORE_YAW
                 )
+            self.pt.coordinate_frame = self.pt.FRAME_LOCAL_NED
             self.pt.velocity.x = velocity[0]
             self.pt.velocity.y = velocity[1]
             self.pt.velocity.z = velocity[2]
@@ -83,7 +82,7 @@ class MavrosControl:
                 self.pt.IGNORE_AFX | self.pt.IGNORE_AFY | self.pt.IGNORE_AFZ |
                 self.pt.IGNORE_YAW
             )
-            self.pt.yaw = yaw_rate
+            self.pt.yaw_rate = yaw_rate
         else:
             self.rospy.logwarn("Velocity control in position mode")
 
@@ -95,7 +94,7 @@ class MavrosControl:
                 self.pt.IGNORE_AFX | self.pt.IGNORE_AFY | self.pt.IGNORE_AFZ |
                 self.pt.IGNORE_YAW_RATE
             )
-            self.pt.yaw = val_deg * 0.0174532925
+            self.pt.yaw = val_deg
         else:
             self.rospy.logwarn("Position control in velocity mode")
 
@@ -110,6 +109,10 @@ class MavrosControl:
             self.pt.position.z = position[2]
         else:
             self.rospy.logwarn("Position control in velocity mode")
+
+    def set_position_yaw(self, position, yaw):
+        self.set_yaw(yaw)
+        self.set_position(position)
 
     def set_pose(self, pose: NPPose):
         if not self.is_velocity:
@@ -186,7 +189,6 @@ class dronePositionController(MavrosControl):
             "land": self.__st_land,
             "disarm": self.__st_disarm
         }
-        self.lqr = LQRController(as_linear=False)
         self.drone_state = "ground"
         self.is_armed = False
         self.is_arrived = False
@@ -244,14 +246,123 @@ class dronePositionController(MavrosControl):
         else:
             self.is_arrived = False
         if not self.ignore_sm:
-            # self.__update_lqr()
             self.pub_pt.publish(self.pt)
 
-    def __update_lqr(self):
-        if self.global_pose.position[2] > 0.1:
-            to_fly, to_yaw = self.lqr.step(self.get_target_position(), self.get_target_yaw())
-            self.set_position(to_fly)
-            self.set_yaw(to_yaw)
+    def __arming(self, to_arm):
+        self.is_armed = to_arm
+        if self.state is not None and self.state.armed != to_arm:
+            self.service_proxy("cmd/arming", self.CommandBool, to_arm)
+
+    def __nop(self):
+        pass
+
+    def __del__(self):
+        self.state_machine.join()
+
+class droneVelocityController(MavrosControl):
+
+    def __init__(self, id: int, params, max_vel: float = 5., pub_rate: int = 20) -> None:
+        self.rospy.loginfo("droneVelocityController started for instance %d", id)
+        self.pid_position = PIDController(
+            P=(3.2/3), 
+            I=(1.3/3), 
+            D=(0.42/3),
+            limit=max_vel)
+        self.pid_yaw = PIDController(
+            P=(3.2/3), 
+            I=(1.3/3), 
+            D=(0.42/3),
+            limit=1.)
+        self.target = None
+        self.target_yaw = 0.
+        super().__init__(id, params, use_velocity_control=True)
+
+        self.drone_states = {
+            "ground": self.__nop,
+            "arm": self.__st_arm,
+            "takeoff": self.__st_takeoff,
+            "air": self.__st_pub_pos,
+            "land": self.__st_land,
+            "disarm": self.__st_disarm
+        }
+        self.drone_state = "ground"
+        self.is_armed = False
+        self.is_arrived = False
+
+        self.ignore_sm = False
+        self.state_machine = Thread(target=self.loop, args=(pub_rate,))
+        self.state_machine.start()
+
+    def set_target_position(self, position):
+        self.target = position
+
+    def set_target_yaw(self, yaw):
+        self.target_yaw = yaw 
+
+    def loop(self, rate):
+        pub_rate = self.rospy.Rate(rate)
+
+        while not self.rospy.is_shutdown():
+            self.set_mode("OFFBOARD")
+            if self.drone_state in self.drone_states:
+                self.drone_states[self.drone_state]()
+            pub_rate.sleep()
+
+    def set_arm(self, status: bool = False):
+        if status:
+            self.drone_state = "arm"
+        else:
+            self.__st_land()
+            self.drone_state = "disarm"
+
+    def takeoff(self) -> bool:
+        if self.is_armed:
+            self.drone_state = "takeoff"
+            return True
+        else:
+            self.rospy.logwarn("Drone not armed!")
+            self.drone_state = "arm"
+            return False
+
+    def __st_takeoff(self):
+        if self.is_armed and self.global_pose is not None:
+            position = self.get_global_position() + np.array([0,0,3.])
+            self.set_target_position(position)
+            self.drone_state = "air"
+
+    def __st_land(self):
+        if self.state is not None and self.state.armed:
+            self.service_proxy("cmd/land", self.CommandTOL)
+
+    def __st_arm(self):
+        self.__arming(True)
+
+    def __st_disarm(self):
+        self.__arming(False)
+
+    def __st_pub_pos(self):
+
+        velocity, err = self.pid_position.step(
+                            current=self.get_global_position(), 
+                            target=self.target, 
+                            timestamp=time.time())
+        
+        q = self.get_global_orientation()
+        _, _, current_yaw = EulerFromQuaternion(q[0], q[1], q[2], q[3])
+        yaw_rate, _ = self.pid_yaw.step(
+                            current=current_yaw, 
+                            target=self.target_yaw, 
+                            timestamp=time.time())
+
+        if np.linalg.norm(err) <= 0.2:
+            self.is_arrived = True
+        else:
+            self.is_arrived = False
+        if not self.ignore_sm:
+            self.set_yaw_rate(yaw_rate)
+            self.set_vel(velocity)
+            self.pub_pt.publish(self.pt)
+
 
     def __arming(self, to_arm):
         self.is_armed = to_arm

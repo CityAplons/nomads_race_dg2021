@@ -11,7 +11,7 @@ from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation as R
 
 from utils.controller import dronePositionController
-# from utils.volumetric_rrt import RRTStar
+from utils.volumetric_rrt import RRTStar
 from ompl import base as ob
 from ompl import geometric as og
 from utils.helpers import *
@@ -123,7 +123,7 @@ class RaceFormation:
                 img2d = np.reshape(
                     img1d, (responses[1].height, responses[1].width))
                 img_pc, drone_pc = depth_to_pc(img2d)
-
+                print(img_pc.shape)
                 cameraToDrone = np.array([
                     [0.0000328, 0.0000000, 1.0000000],
                     [-1.0000000, 0.0000328, 0.0000328],
@@ -141,7 +141,7 @@ class RaceFormation:
                 droneRot = R.from_quat(
                     instance["controller"].get_global_orientation()).as_matrix()
                 droneRot = np.dot(droneRot, cameraToDrone)
-                droneRot = np.dot(droneRot, fmlRot)
+                # droneRot = np.dot(droneRot, fmlRot)
                 droneToWorld = np.concatenate((droneRot, dronePos.T), axis=1)
                 droneToWorld = np.concatenate(
                     (droneToWorld, np.array([[0., 0., 0., 1.]])))
@@ -181,51 +181,59 @@ class RaceFormation:
                 # o3d.io.write_point_cloud("/home/nikita/pc" + str(rospy.get_time()) + ".xyz", pcd)
                 voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(
                     pcd,
-                    voxel_size=0.6
+                    voxel_size=0.8
                 )
                 o3d.visualization.draw_geometries([voxel_grid])
                 # path_planner = AStar(voxel_grid)
 
                 cur_position = instance["controller"].get_global_position()
 
-                def isStateValid(state):
-                    pos = np.array([state.getX(), state.getY(), state.getZ()])
-                    return  self.obstacles.check_if_included(
-                        o3d.utility.Vector3dVector(pos))[0]
+                # def isStateValid(state):
+                #     pos = np.array([state.getX(), state.getY(), state.getZ()])
+                #     return  voxel_grid.check_if_included(
+                #         o3d.utility.Vector3dVector([pos]))[0]
 
-                space = ob.SE3StateSpace()
-                bounds = ob.RealVectorBounds(3)
-                bounds.setLow(-8)
-                bounds.setHigh(8)
-                bounds.setHigh(0,(40+cur_position[0]))
-                space.setBounds(bounds)
-                ss = og.SimpleSetup(space)
-                ss.setStateValidityChecker(ob.StateValidityCheckerFn(isStateValid))
-                start = ob.State(space)
-                start().setXYZ(cur_position[0], cur_position[1], cur_position[2])
-                goal = ob.State(space)
-                start().setXYZ(target[0], target[1], target[2])
-                ss.setStartAndGoalStates(start, goal)
-                solved = ss.solve(1.0)
-                # search_volume = Area(shift=cur_position, 
-                #                     min_y=-8, max_y=8,
-                #                     min_z=-8, max_z=8)
-                # if search_volume.within_area(target):
-                #     path_planner = RRTStar(
-                #         dronePos[0], voxel_grid, 6, search_volume, resolution=30, it_limit=400)
-                #     path = path_planner.search(target)
-                #     if path is not None:
-                #         print(path)
-                #         # path = path_planner.smooth_path(path)
-                #         instance["waypoints"] = path
-                #         self.path_found = True
-                #         self.run_cv_task = False
-                # else:
-                #     rospy.logwarn("Target position out of space")
-                #     time.sleep(0.5)
-                if solved:
-                    ss.simplifySolution()
-                    print(ss.getSolutionPath())
+                
+                # bounds = ob.RealVectorBounds(3)
+                # bounds.setHigh(0,(80. + cur_position[0]))
+                # bounds.setLow(0,( -2. + cur_position[0]))
+                # bounds.setHigh(1, 16.)
+                # bounds.setLow(1, -16.)
+                # bounds.setHigh(2, 19.)
+                # bounds.setLow(2,  1.)
+
+                # space = ob.SE3StateSpace()
+                # space.setBounds(bounds)
+
+                # ss = og.SimpleSetup(space)
+                # ss.setStateValidityChecker(ob.StateValidityCheckerFn(isStateValid))
+                # start = ob.State(space)
+                # start().setXYZ(cur_position[0], cur_position[1], cur_position[2])
+                # start().rotation().setIdentity()
+                # goal = ob.State(space)
+                # goal().setXYZ(target[0], target[1], target[2])
+                # goal().rotation().setIdentity()
+                # ss.setStartAndGoalStates(start, goal)
+                # solved = ss.solve(1.0)
+                search_volume = Area(shift=cur_position, 
+                                    min_y=-8, max_y=8,
+                                    min_z=-6, max_z=6)
+                if search_volume.within_area(target):
+                    path_planner = RRTStar(
+                        dronePos[0], voxel_grid, 5, search_volume, resolution=30, it_limit=200)
+                    path = path_planner.search(target)
+                    if path is not None:
+                        print(path)
+                        # path = path_planner.smooth_path(path)
+                        instance["waypoints"] = path
+                        self.path_found = True
+                        self.run_cv_task = False
+                else:
+                    rospy.logwarn("Target position out of space")
+                    time.sleep(0.5)
+                # if solved:
+                #     ss.simplifySolution()
+                #     print(ss.getSolutionPath())
             else:
                 time.sleep(0.5)
             time.sleep(0.03)

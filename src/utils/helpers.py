@@ -125,3 +125,59 @@ class NPPose:
             ros_pose.orientation.w
         ])
 
+class PIDController:
+    P = 1.
+    I = 0.
+    D = 0.
+    Tp = 0.
+    Ep = 0.
+
+    def __init__(self, P, I, D, limit) -> None:
+        self.P = P
+        self.I = I
+        self.D = D
+        self.lim = limit
+
+    def step(self, current, target, timestamp: float):
+        if self.Ep is np.ndarray:
+            self.Ep = np.zeros(shape=current.shape, dtype=np.float64)
+
+        dt = timestamp - self.Tp
+        self.Tp = timestamp
+
+        error = target - current
+
+        integral = self.I * dt * error
+        differential = self.D / dt * (error - self.Ep)
+        
+        self.Ep = error
+
+        updated = (self.P * error) + differential + integral
+        updated_norm = np.linalg.norm(updated)
+        if updated_norm > self.lim:
+           updated = updated / updated_norm * self.lim      
+        
+        return updated, error
+
+def EulerFromQuaternion(x, y, z, w):
+        """
+        Convert a quaternion into euler angles (roll, pitch, yaw)
+        roll is rotation around x in radians (counterclockwise)
+        pitch is rotation around y in radians (counterclockwise)
+        yaw is rotation around z in radians (counterclockwise)
+        source: https://automaticaddison.com/how-to-convert-a-quaternion-into-euler-angles-in-python/
+        """
+        t0 = +2.0 * (w * x + y * z)
+        t1 = +1.0 - 2.0 * (x * x + y * y)
+        roll_x = math.atan2(t0, t1)
+     
+        t2 = +2.0 * (w * y - z * x)
+        t2 = +1.0 if t2 > +1.0 else t2
+        t2 = -1.0 if t2 < -1.0 else t2
+        pitch_y = math.asin(t2)
+     
+        t3 = +2.0 * (w * z + x * y)
+        t4 = +1.0 - 2.0 * (y * y + z * z)
+        yaw_z = math.atan2(t3, t4)
+     
+        return roll_x, pitch_y, yaw_z # in radians

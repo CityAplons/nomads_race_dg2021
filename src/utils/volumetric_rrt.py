@@ -57,10 +57,12 @@ class RRTStar:
             path = [self.goal]
             node = self.G[goal_ind]
             while node.parent is not None:
+                print(path)
                 path.append(node.position)
                 node = self.G[node.parent]
             return path[::-1]
         else:
+            rospy.logerr("Path not found")
             return None
 
     def steer(self, start: Node, end: Node):
@@ -104,11 +106,12 @@ class RRTStar:
         for id in neighbour_ids:
             if id == node_min_id:
                 continue
-            cost = euclidean_distance(new.position, self.G[id].position)
-            if (new.h + cost) >= self.G[id].h:
+            path, cost = self.steer(new, self.G[id])
+            if self.is_obstacle(path) and (new.h + cost) >= self.G[id].h:
                 continue
-            self.G[id] = new
-            self.propagate_cost_to_leaves(new)
+            self.G[id].parent = len(self.G) - 1 
+            self.G[id].h = new.h + cost
+            #self.propagate_cost_to_leaves(new)
 
     def find_nearest(self, node: Node):
         dList = [euclidean_distance(node_it.position, node.position)
@@ -150,7 +153,7 @@ class RRTStar:
 
                 if np.allclose(node_new.position, goal, atol=0.1):
                     return self.form_path()
-                        
+            print("[Planner] Iteration: %d"%self.counter)
         return self.form_path()
 
     def search_best_goal_node(self):

@@ -1,21 +1,23 @@
 import sys
 import cv2
 import time
-import open3d as o3d
 import rospy
 import airsim
 import numpy as np
+import math
 from threading import Thread
 from scipy import signal
 from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation as R
 
-from utils.controller import dronePositionController
-from utils.volumetric_rrt import RRTStar
+from utils.controller import droneVelocityController
 from utils.helpers import *
 
 sys.setrecursionlimit(1500)
-freq = 30
+freq = 20
+yaw_corret = 30
+way_hole_poses = np.array([[48, 0.5, 9], [88, -1.5, 10]])
+
 
 # to calculate the error definition
 # up left x, y, z, w, h,
@@ -41,16 +43,6 @@ class RaceFormation:
         self.airsim_client = airsim.MultirotorClient()
         self.airsim_client.confirmConnection()
 
-        # show camera parameters
-        distort_depth = self.airsim_client.simGetDistortionParams(airsim.ImageType.DepthPlanar)
-        ProjectionMatrix = self.airsim_client.simGetCameraInfo(airsim.ImageType.DepthPlanar).proj_mat
-        rotationMatrix = self.airsim_client.simGetCameraInfo(airsim.ImageType.DepthPlanar).pose.orientation
-        cameraPosition = self.airsim_client.simGetCameraInfo(airsim.ImageType.DepthPlanar).pose.position
-        print('-----distort_depth', distort_depth)
-        print('-----ProjectionMatrix', ProjectionMatrix)
-        print('-----rotationMatrix', rotationMatrix)
-        print('-----cameraPosition', cameraPosition)
-
         self.run_cv = True
         self.target = np.array([10., 0., 3.])
 
@@ -63,9 +55,13 @@ class RaceFormation:
         self.current_holes = []
         self.poses_in_hole = []
         self.is_hole_detected = False
-        self.min_size_drone = [1.95, 1.95]  # Y, Z metes for one drone
+        self.min_size_drone = [1.5, 1.5]  # Y, Z metes for one drone
         self.check_angle = [-90, 90]
         self.check_id = 0
+        self.detect_next_turn = False
+        self.orientation = 0
+        self.orient_buf = 0
+        self.current_point_id = 0
         # -------
 
         self.instances = []
@@ -75,7 +71,7 @@ class RaceFormation:
             instance = {
                 "name": vehicle,
                 "id": id,
-                "controller": dronePositionController(id, pid_params, pub_rate=freq),
+                "controller": droneVelocityController(id, pid_params, max_vel=5, pub_rate=freq),
                 "waypoints": [first_point]
             }
             if(id == 1):
@@ -116,15 +112,19 @@ class RaceFormation:
                 if len(instance["waypoints"]):
                     rospy.loginfo("Following waypoint")
                     self.target = instance["waypoints"].pop(0)
-                    instance["controller"].set_position(self.target)
+                    instance["controller"].set_target_position(self.target)
                 elif not self.run_cv_task:
-                    instance["controller"].set_yaw(30)
+                    instance["controller"].set_target_yaw((yaw_corret + self.orientation) * 0.0174532925)
                     print('get global pose',
                           instance["controller"].get_global_position())
                     self.previous_pose = instance["controller"].get_global_position(
                     )
+                    instance["controller"].set_target_yaw((yaw_corret + self.orientation) * 0.0174532925)
+                    instance["controller"].set_target_position(instance["controller"].get_global_position())
                     self.cv_request_path(
                         instance["controller"].get_global_position() + np.array([30., 0., 0.]))
+            # wait for stabilasing
+            time.sleep(5.0)
             # Re-calculate center pose location
             formation_center_pose += instance["controller"].get_global_position() / \
                 self.num
@@ -136,6 +136,7 @@ class RaceFormation:
         self.run_cv_task = True
 
     def cv_thread(self, instance: dict):
+        rad = math.pi / 180
 
         rospy.loginfo("CV task created")
         max_found = False
@@ -151,11 +152,15 @@ class RaceFormation:
                     img1d, (responses[1].height, responses[1].width))
                 img_pc, drone_pc = depth_to_pc(img2d)
 
-                
                 cameraToDrone = np.array([
                     [0.0000328, 0.0000000, 1.0000000],
-                    [1.0000000, 0.0000328, -0.0000328],
-                    [-0.0000328, 1.0000000, 0.0000000],
+                    [-1.0000000, 0.0000328, 0.0000328],
+                    [-0.0000328, -1.0000000, 0.0000000],
+                ])
+                fmlRot = np.array([
+                    [0.8660254,  0.0000000,  0.5000000],
+                    [0.0000000,  1.0000000,  0.0000000],
+                    [-0.5000000,  0.0000000,  0.8660254],
                 ])
 
                 dronePos = np.array(
@@ -163,32 +168,75 @@ class RaceFormation:
                 droneRot = R.from_quat(
                     instance["controller"].get_global_orientation()).as_matrix()
                 droneRot = np.dot(droneRot, cameraToDrone)
+                droneRot = np.dot(droneRot, fmlRot)
                 droneToWorld = np.concatenate((droneRot, dronePos.T), axis=1)
                 droneToWorld = np.concatenate(
                     (droneToWorld, np.array([[0., 0., 0., 1.]])))
 
-                wall_roi = [30, responses[1].height - 40, 75,
-                            responses[1].width - 75]  # x1, x2, y1, y2
-                # wall_roi = [30, responses[1].height - 30, 80, responses[1].width - 80 ]
+                wall_roi = [20, responses[1].height - 20, 100,
+                            responses[1].width - 100]  # x1, x2, y1, y2
                 wall_pc = img_pc[wall_roi[0]:wall_roi[1],
                                  wall_roi[2]:wall_roi[3]]
                 wall_pc = np.reshape(
                     wall_pc, (wall_pc.shape[0]*wall_pc.shape[1], wall_pc.shape[2]))
                 wall_pc = pc_transform(wall_pc, droneToWorld)
-                delta = np.abs(np.min(wall_pc[:, 0]) - dronePos[0, 0])
+
+                delta = np.abs(np.min(wall_pc[:, int(math.sin(self.orientation*rad))]) - dronePos[0, int(math.sin(self.orientation*rad))])
 
                 # moving to wall
                 if delta > 10.0:
                     rospy.logwarn("%f", delta)
-                    point = dronePos[0] + np.array([1.0, 0, 0])
-                    point[1] = self.previous_pose[1]
+                    koef = 0.9*(delta - 10.0)
+                    point = dronePos[0] + np.array(
+                        [math.cos(self.orientation * rad) * koef, math.sin(self.orientation * rad) * koef, 0])
+
+                    # keep y coordinate while moving x
+                    if int(math.sin(self.orientation*rad)) == 0:
+                        point[1] = self.previous_pose[1]
+                    # keep x coordinate while moving y
+                    if int(math.sin(self.orientation*rad)) == 1:
+                        point[0] = self.previous_pose[0]
+                    # keep z
                     point[2] = self.previous_pose[2]
                     self.previous_pose = point
-                    instance["controller"].set_position(point)
+                    instance["controller"].set_target_yaw((yaw_corret + self.orientation) * 0.0174532925)
+                    instance["controller"].set_target_position(point)
+
+                    # check for turns in labyrinth
+                    depth = img1d.reshape(
+                        responses[1].height, responses[1].width)
+                    depth = np.array(depth, dtype=np.uint8)
+                    self.checking_turns(depth, delta)
 
                 if delta <= 10.0:
                     # delay to stabilaze drone
-                    time.sleep(10.0)
+                    time.sleep(3.0)
+
+                    responses = self.airsim_client.simGetImages([
+                        airsim.ImageRequest(
+                            '0', airsim.ImageType.Scene, compress=False),
+                        airsim.ImageRequest('1', airsim.ImageType.DepthPerspective, True, False)], vehicle_name=instance["name"])
+                    img1d = np.array(responses[1].image_data_float, dtype=np.float)
+                    img1d[img1d > 255] = 255
+                    img2d = np.reshape(
+                        img1d, (responses[1].height, responses[1].width))
+                    img_pc, drone_pc = depth_to_pc(img2d)
+
+                    dronePos = np.array(
+                        [instance["controller"].get_global_position()])
+                    droneRot = R.from_quat(
+                        instance["controller"].get_global_orientation()).as_matrix()
+                    droneRot = np.dot(droneRot, cameraToDrone)
+                    droneRot = np.dot(droneRot, fmlRot)
+                    droneToWorld = np.concatenate((droneRot, dronePos.T), axis=1)
+                    droneToWorld = np.concatenate(
+                        (droneToWorld, np.array([[0., 0., 0., 1.]])))
+
+                    # world_pc = pc_transform(drone_pc, droneToWorld)
+                    # pcd = o3d.geometry.PointCloud()
+                    # pcd.points = o3d.utility.Vector3dVector(world_pc)
+                    # o3d.io.write_point_cloud("/home/asad/catkin_ws/src/solution/pc" + str(rospy.get_time()) + ".xyz", pcd)
+
                     # --- holes detection and poses calculation ---
                     depth = img1d.reshape(
                         responses[1].height, responses[1].width)
@@ -197,36 +245,44 @@ class RaceFormation:
                     self.depth_hole_detection(
                         depth, droneToWorld, img_pc, th=20)
 
-                    if self.is_hole_detected:
+                    if self.is_hole_detected:  # works
                         self.get_poses_in_holes()
                         print(self.poses_in_hole[0][0])
-                        print('go to ', self.poses_in_hole[0][0])
-                        print("drone_pos", instance["controller"].get_global_position())
 
-                    if not self.is_hole_detected:
-                        instance["controller"].set_yaw(
-                            30 + self.check_angle[self.check_id])
-                        self.check_id += 1
+                        # TODO
+                        print('go to ', self.poses_in_hole[0][0])
+
+                    if not self.is_hole_detected:  # works
+                        self.orientation = self.orient_buf
+                        print('rotating', self.orientation)
+                        instance["controller"].set_target_yaw((yaw_corret + self.orientation) * 0.0174532925)
+                        instance["controller"].set_target_position(instance["controller"].get_global_position())
 
                 if self.is_hole_detected:
+                    instance["controller"].set_target_position(
+                        self.poses_in_hole[0][0])
+                    # Waiting for arrival to point
+                    while self.achieved_point(self.poses_in_hole[0][0], instance["controller"].get_global_position(), 0.1):
+                        pass
 
-                    # instance["controller"].set_position(
-                    #     self.poses_in_hole[0][0])
-                    # while self.achieved_point(self.poses_in_hole[0][0], instance["controller"].get_global_position(), 0.1):
-                    #     pass
+                    move_through = 5.0  # meters
+                    next_point = self.poses_in_hole[0][0] + np.array([move_through * math.cos(
+                        self.orientation * rad), move_through * math.sin(self.orientation * rad), 0])
 
-                    # next_point = self.poses_in_hole[0][0] + \
-                    #     np.array([5.0, 0, 0])
-                    # print('next_point', next_point)
-                    # instance["controller"].set_position(next_point)
-                    # while self.achieved_point(next_point, instance["controller"].get_global_position(), 0.1):
-                    #     pass
-                    # rospy.logwarn("end wall, next one")
+                    print('Go through hole, next point', next_point)
+                    instance["controller"].set_target_yaw((yaw_corret + self.orientation) * 0.0174532925)
+                    instance["controller"].set_target_position(next_point)
+                    # Waiting for arrival to point
+                    while self.achieved_point(next_point, instance["controller"].get_global_position(), 0.1):
+                        pass
+                    rospy.logwarn("end wall, next one")
 
                     self.current_holes = []
                     self.poses_in_hole = []
                     self.run_cv = True
                     self.check_id = 0
+                    self.is_hole_detected = False
+                    self.current_point_id += 1
 
                 # world_pc = pc_transform(drone_pc, droneToWorld)
                 # roi = world_pc - dronePos[0]
@@ -248,7 +304,7 @@ class RaceFormation:
 
                 # pcd = o3d.geometry.PointCloud()
                 # pcd.points = o3d.utility.Vector3dVector(world_pc)
-                #  # o3d.io.write_point_cloud("/home/nikita/pc" + str(rospy.get_time()) + ".xyz", pcd)
+                # o3d.io.write_point_cloud("/home/asad/catkin_ws/src/solutions/pc" + str(rospy.get_time()) + ".xyz", pcd)
                 # voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(
                 #     pcd,
                 #     voxel_size=0.6
@@ -282,60 +338,90 @@ class RaceFormation:
             achieved = True
         return achieved
 
+    def checking_turns(self, depth, delta):
+        if delta >= 20:
+            wall_l = depth[40:100, 0:30]  # left
+            wall_r = depth[40:100, 220:255]  # right
+            wall_d = depth[130:143, 100:150]  # down
+            wall_f = depth[40:100, 50:200]  # forward
+            # print('average L', np.mean(wall_l), "R", np.mean(wall_r), "D",np.mean(wall_d), 'W', np.max(wall_w))
+            if np.mean(wall_l) > 35 and not self.detect_next_turn:
+                self.detect_next_turn = True
+                self.orient_buf += 90
+                print('next left')
+            if np.mean(wall_r) > 35 and not self.detect_next_turn:
+                self.detect_next_turn = True
+                self.orient_buf += -90
+                print('next right')
+            if np.max(wall_d) > 40 and not self.detect_next_turn:
+                print('next down')
+                self.detect_next_turn = True
+                self.orient_buf += 0
+
     def depth_hole_detection(self, depth, droneToWorld, img_pc, th=20):
-        (T, thresh) = cv2.threshold(
-            depth, th, 255, cv2.THRESH_BINARY_INV)
+        rad = math.pi / 180
+        (T, thresh) = cv2.threshold(depth, th, 255, cv2.THRESH_BINARY_INV)
         contours, hierarchy = cv2.findContours(
             thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-        cv2.imwrite('/home/asad/thresh.png', thresh)
 
-        k = 0
-        print('find counters n =', len(contours))
-
-        # if drone detected counters
+        # check how mush counters we detected. Are they there or not?
         if len(contours) > 1:
             self.is_hole_detected = True
-
         if len(contours) <= 1:
             self.is_hole_detected = False
+        print('find counters n =', len(contours) - 1, self.is_hole_detected)
 
+        # if YES
         if self.is_hole_detected:
-            k = 0
+            k = 0  # counter
             for contour in contours:
                 if k > 0:
-                    print('contour', k)
-                    box = cv2.boundingRect(contour)
+                    print('Contour №', k)
+                    rect = cv2.minAreaRect(contour)
+                    box = cv2.boxPoints(rect)
+                    box = np.int0(box)
                     print(box[0], box[1], box[2], box[3])
-                    # border_point1 = img_pc[box[1], box[0]]
-                    # border_point2 = img_pc[box[1] + box[3], box[0]+box[2]]
-                    if box[0] == 144:
-                        box[0] -= 1
-                    if box[1] == 256:
-                        box[1] -= 1
-                    l = 0
-                    if box[1] + box[3] == 144:
-                        l = -1
-                    if box[0] + box[2] == 256:
-                        l = -1
-                    border_point1 = img_pc[box[1] - 1, box[0]-1]
-                    border_point2 = img_pc[box[1] +
-                                           box[3] + l, box[0] + box[2] + l]
-                    border_points = pc_transform(
-                        [border_point1, border_point2], droneToWorld)
-                    border_point1 = border_points[0]
-                    border_point2 = border_points[1]
-                    print("border_points:", border_point1, border_point2)
-                    # current_holes: x_wall, y_left_up, z_left_up, w, h, 
-                    w = abs(border_point2[1] - border_point1[1])
-                    h = abs(border_point2[2] - border_point1[2])
-                    # w = box[2] * 0.08
-                    # h = box[3] * 0.085714
 
-                    x = (border_point1[0] + border_point2[0])/2
-                    if w >= 2.0 and h >= 2.0:
-                        self.current_holes.append([x, border_point1[1], border_point1[2], w, h])
-                        print([x, border_point1[1], border_point1[2], w, h])
+                    # fix it, if box[0] = 144 of box[1] = 256, index are not in range
+                    # if box[0] >= 256:
+                    #     box[0] = 255
+                    # if box[1] >= 144:
+                    #     box[1] = 143
+                    # l = 0
+                    # if box[1] + box[3] >= 144:
+                    #     l = 143
+                    # if box[0] + box[2] >= 256:
+                    #     l = 255
+
+                    # get world position of from pixels
+                    print(img_pc.shape)
+                    border_points = [ img_pc[p[1], p[0]] for p in box ]
+                    border_points = pc_transform(
+                        border_points, droneToWorld)
+                    print("border_points:", border_points)
+                    
+                    # current_holes: x_wall, y_left_up, z_left_up, w, h,
+                    if self.orientation == 0:
+                        w = abs(border_points[1][1] - border_points[0][1])
+                        x = (border_points[0][0] + border_points[2][0])/2
+                        y = border_points[0][1]
+
+                    if self.orientation == 90:
+                        w = abs(border_points[1][0] - border_points[0][0])
+                        x = border_points[0][0]
+                        y = (border_points[0][1] + border_points[2][1])/2
+
+                    z = border_points[0][2]
+                    h = abs(border_points[2][2] - border_points[0][2])
+                    
+                    if w >= self.min_size_drone[0] and h >= self.min_size_drone[1]:
+                        self.current_holes.append(
+                            [x, y, z, w, h])
+                        print([x, y, z, w, h])
                 k += 1
+
+        if not self.is_hole_detected:
+            print('Nothing.', self.orientation)
 
     def get_error(self, p11, p12, p2):
         p11 = np.array(p11)
