@@ -6,7 +6,7 @@
     <node pkg="dg_solutions" name="solver" type="node.py" output="screen">
         <param name="league" value="$(arg script_name)" />
         <param name="count" value="$(arg drone_count)" />
-        <!-- <rosparam command="load" file="$(find dg_solutions)/config/iris.yaml" /> -->
+        <rosparam command="load" file="$(find dg_solutions)/config/iris.yaml" />
     </node>
 
 </launch>

@@ -104,7 +104,7 @@ class MavrosControl:
             self.pt.type_mask = (
                 self.pt.IGNORE_VX | self.pt.IGNORE_VY | self.pt.IGNORE_VZ | 
                 self.pt.IGNORE_AFX | self.pt.IGNORE_AFY | self.pt.IGNORE_AFZ | 
-                self.pt.IGNORE_YAW | self.pt.IGNORE_YAW_RATE)
+                self.pt.IGNORE_YAW_RATE)
             self.pt.position.x = position[0]
             self.pt.position.y = position[1]
             self.pt.position.z = position[2]
@@ -239,7 +239,7 @@ class dronePositionController(MavrosControl):
     def __st_pub_pos(self):
         d = euclidean_distance(self.get_global_position(), self.get_target_position())
 
-        if d <= 0.3:
+        if d <= 0.2:
             self.is_arrived = True
         else:
             self.is_arrived = False

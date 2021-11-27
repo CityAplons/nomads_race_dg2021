@@ -119,9 +119,9 @@ class NPPose:
             ros_pose.position.z
         ])
         self.orientation = np.array([
-            ros_pose.orientation.w,
             ros_pose.orientation.x,
             ros_pose.orientation.y,
-            ros_pose.orientation.z
+            ros_pose.orientation.z,
+            ros_pose.orientation.w
         ])
 

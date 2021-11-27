@@ -11,7 +11,9 @@ from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation as R
 
 from utils.controller import dronePositionController
-from utils.volumetric_rrt import RRTStar
+# from utils.volumetric_rrt import RRTStar
+from ompl import base as ob
+from ompl import geometric as og
 from utils.helpers import *
 
 sys.setrecursionlimit(1500)
@@ -47,7 +49,7 @@ class RaceFormation:
         self.instances = []
         for id, vehicle in enumerate(self.airsim_client.listVehicles(), 1):
             rospy.loginfo("Airsim instance %d: %s", num, vehicle)
-            first_point = np.array([20, 0, (12. - 2*id)])
+            first_point = np.array([40, 0, (12. - 2*id)])
             instance = {
                 "name": vehicle,
                 "id": id,
@@ -90,16 +92,15 @@ class RaceFormation:
                 self.arrived_num += 1
 
                 if len(instance["waypoints"]):
-                    rospy.loginfo("Following waypoint")
                     self.target = instance["waypoints"].pop(0)
+                    instance["controller"].set_yaw(30)
                     instance["controller"].set_position(self.target)
                 elif not self.run_cv_task:
-                    instance["controller"].set_yaw(30)
                     self.cv_request_path(
-                        instance["controller"].get_global_position() + np.array([20., 0., 0.]))
-            # Re-calculate center pose location
-            formation_center_pose += instance["controller"].get_global_position() / \
-                self.num
+                        instance["controller"].get_global_position() + np.array([30., 0., 0.]))
+                # Re-calculate center pose location
+                formation_center_pose += instance["controller"].get_global_position() / \
+                    self.num
 
         self.formation_center_pose = formation_center_pose
 
@@ -125,14 +126,22 @@ class RaceFormation:
 
                 cameraToDrone = np.array([
                     [0.0000328, 0.0000000, 1.0000000],
-                    [1.0000000, 0.0000328, -0.0000328],
-                    [-0.0000328, 1.0000000, 0.0000000],
+                    [-1.0000000, 0.0000328, 0.0000328],
+                    [-0.0000328, -1.0000000, 0.0000000],
                 ])
+
+                fmlRot = np.array([
+                    [ 0.8660254,  0.0000000,  0.5000000],
+                    [ 0.0000000,  1.0000000,  0.0000000],
+                    [-0.5000000,  0.0000000,  0.8660254],
+                ])
+
                 dronePos = np.array(
                     [instance["controller"].get_global_position()])
                 droneRot = R.from_quat(
                     instance["controller"].get_global_orientation()).as_matrix()
                 droneRot = np.dot(droneRot, cameraToDrone)
+                droneRot = np.dot(droneRot, fmlRot)
                 droneToWorld = np.concatenate((droneRot, dronePos.T), axis=1)
                 droneToWorld = np.concatenate(
                     (droneToWorld, np.array([[0., 0., 0., 1.]])))
@@ -150,48 +159,73 @@ class RaceFormation:
                 #     self.run_cv_task = False
 
                 world_pc = pc_transform(drone_pc, droneToWorld)
-                roi = world_pc - dronePos[0]
-                trimed_ids = np.argwhere(
-                    (roi[:, 2] > 1)&
-                    (roi[:, 2] < 18)&
-                    (roi[:, 0] < 40)&
-                    (roi[:, 1] < 40))
-                max_pos = np.amax(roi[trimed_ids], axis=0)[0]
-                #target = self.target
-                target = max_pos
-                self.target = target
-                target_yaw = np.arctan2(target[1], target[0])
-                print(target, target_yaw)
-
-                instance["controller"].set_yaw(target_yaw*2*np.pi)
+                # roi = world_pc - dronePos[0]
+                # trimed_ids = np.argwhere(
+                #     (roi[:, 2] > 1)&
+                #     (roi[:, 2] < 18)&
+                #     (roi[:, 0] < 40)&
+                #     (roi[:, 1] < 40))
+                # max_pos = np.amax(roi[trimed_ids], axis=0)[0]
+                # #target = self.target
+                # target = max_pos
+                # self.target = target
+                # target_yaw = np.arctan2(target[1], target[0])
+                # print(target, target_yaw)
+                instance["controller"].set_yaw(30)
                 instance["controller"].set_position(instance["controller"].get_global_position())
-                time.sleep(3)
+                # time.sleep(3)
+                target = self.target
 
                 pcd = o3d.geometry.PointCloud()
                 pcd.points = o3d.utility.Vector3dVector(world_pc)
-                 # o3d.io.write_point_cloud("/home/nikita/pc" + str(rospy.get_time()) + ".xyz", pcd)
+                # o3d.io.write_point_cloud("/home/nikita/pc" + str(rospy.get_time()) + ".xyz", pcd)
                 voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(
                     pcd,
                     voxel_size=0.6
                 )
-                # o3d.visualization.draw_geometries([voxel_grid])
-                #path_planner = AStar(voxel_grid)
+                o3d.visualization.draw_geometries([voxel_grid])
+                # path_planner = AStar(voxel_grid)
 
                 cur_position = instance["controller"].get_global_position()
-                shifted = np.array([cur_position[0], cur_position[1], 0])
-                search_volume = Area(shift=shifted, min_y=-40, max_y=40)
-                if search_volume.within_area(target):
-                    path_planner = RRTStar(
-                        dronePos[0], voxel_grid, 7, search_volume, resolution=20, it_limit=1500)
-                    path = path_planner.search(target)
-                    if path is not None:
-                        #path = path_planner.smooth_path(path)
-                        instance["waypoints"] = path[1:]
-                        self.path_found = True
-                        self.run_cv_task = False
-                else:
-                    rospy.logwarn("Target position out of space")
-                    time.sleep(0.5)
+
+                def isStateValid(state):
+                    pos = np.array([state.getX(), state.getY(), state.getZ()])
+                    return  self.obstacles.check_if_included(
+                        o3d.utility.Vector3dVector(pos))[0]
+
+                space = ob.SE3StateSpace()
+                bounds = ob.RealVectorBounds(3)
+                bounds.setLow(-8)
+                bounds.setHigh(8)
+                bounds.setHigh(0,(40+cur_position[0]))
+                space.setBounds(bounds)
+                ss = og.SimpleSetup(space)
+                ss.setStateValidityChecker(ob.StateValidityCheckerFn(isStateValid))
+                start = ob.State(space)
+                start().setXYZ(cur_position[0], cur_position[1], cur_position[2])
+                goal = ob.State(space)
+                start().setXYZ(target[0], target[1], target[2])
+                ss.setStartAndGoalStates(start, goal)
+                solved = ss.solve(1.0)
+                # search_volume = Area(shift=cur_position, 
+                #                     min_y=-8, max_y=8,
+                #                     min_z=-8, max_z=8)
+                # if search_volume.within_area(target):
+                #     path_planner = RRTStar(
+                #         dronePos[0], voxel_grid, 6, search_volume, resolution=30, it_limit=400)
+                #     path = path_planner.search(target)
+                #     if path is not None:
+                #         print(path)
+                #         # path = path_planner.smooth_path(path)
+                #         instance["waypoints"] = path
+                #         self.path_found = True
+                #         self.run_cv_task = False
+                # else:
+                #     rospy.logwarn("Target position out of space")
+                #     time.sleep(0.5)
+                if solved:
+                    ss.simplifySolution()
+                    print(ss.getSolutionPath())
             else:
                 time.sleep(0.5)
             time.sleep(0.03)
