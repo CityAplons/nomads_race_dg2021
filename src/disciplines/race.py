@@ -6,12 +6,11 @@ import airsim
 import numpy as np
 import math
 from threading import Thread
-from scipy import signal
-from scipy.spatial import KDTree
 from scipy.spatial.transform import Rotation as R
 
 from utils.controller import droneVelocityController
 from utils.helpers import *
+from utils.cv import *
 
 sys.setrecursionlimit(1500)
 freq = 20
@@ -113,6 +112,7 @@ class RaceFormation:
                     rospy.loginfo("Following waypoint")
                     self.target = instance["waypoints"].pop(0)
                     instance["controller"].set_target_position(self.target)
+                    time.sleep(6000.0)
                 elif not self.run_cv_task:
                     instance["controller"].set_target_yaw((yaw_corret + self.orientation) * 0.0174532925)
                     print('get global pose',
@@ -124,7 +124,7 @@ class RaceFormation:
                     self.cv_request_path(
                         instance["controller"].get_global_position() + np.array([30., 0., 0.]))
             # wait for stabilasing
-            time.sleep(5.0)
+            
             # Re-calculate center pose location
             formation_center_pose += instance["controller"].get_global_position() / \
                 self.num
@@ -232,11 +232,6 @@ class RaceFormation:
                     droneToWorld = np.concatenate(
                         (droneToWorld, np.array([[0., 0., 0., 1.]])))
 
-                    # world_pc = pc_transform(drone_pc, droneToWorld)
-                    # pcd = o3d.geometry.PointCloud()
-                    # pcd.points = o3d.utility.Vector3dVector(world_pc)
-                    # o3d.io.write_point_cloud("/home/asad/catkin_ws/src/solution/pc" + str(rospy.get_time()) + ".xyz", pcd)
-
                     # --- holes detection and poses calculation ---
                     depth = img1d.reshape(
                         responses[1].height, responses[1].width)
@@ -283,50 +278,6 @@ class RaceFormation:
                     self.check_id = 0
                     self.is_hole_detected = False
                     self.current_point_id += 1
-
-                # world_pc = pc_transform(drone_pc, droneToWorld)
-                # roi = world_pc - dronePos[0]
-                # trimed_ids = np.argwhere(
-                #     (roi[:, 2] > 1)&
-                #     (roi[:, 2] < 18)&
-                #     (roi[:, 0] < 40)&
-                #     (roi[:, 1] < 40))
-                # max_pos = np.amax(roi[trimed_ids], axis=0)[0]
-                # #target = self.target
-                # target = max_pos
-                # self.target = target
-                # target_yaw = np.arctan2(target[1], target[0])
-                # print(target, target_yaw)
-
-                # instance["controller"].set_yaw(target_yaw*2*np.pi)
-                # instance["controller"].set_position(instance["controller"].get_global_position())
-                # time.sleep(3)
-
-                # pcd = o3d.geometry.PointCloud()
-                # pcd.points = o3d.utility.Vector3dVector(world_pc)
-                # o3d.io.write_point_cloud("/home/asad/catkin_ws/src/solutions/pc" + str(rospy.get_time()) + ".xyz", pcd)
-                # voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(
-                #     pcd,
-                #     voxel_size=0.6
-                # )
-                # # o3d.visualization.draw_geometries([voxel_grid])
-                # #path_planner = AStar(voxel_grid)
-
-                # cur_position = instance["controller"].get_global_position()
-                # shifted = np.array([cur_position[0], cur_position[1], 0])
-                # search_volume = Area(shift=shifted, min_y=-40, max_y=40)
-                # if search_volume.within_area(target):
-                #     path_planner = RRTStar(
-                #         dronePos[0], voxel_grid, 7, search_volume, resolution=20, it_limit=1500)
-                #     path = path_planner.search(target)
-                #     if path is not None:
-                #         #path = path_planner.smooth_path(path)
-                #         instance["waypoints"] = path[1:]
-                #         self.path_found = True
-                #         self.run_cv_task = False
-                # else:
-                #     rospy.logwarn("Target position out of space")
-                #     time.sleep(0.5)
             else:
                 time.sleep(0.5)
             time.sleep(0.03)
@@ -381,17 +332,6 @@ class RaceFormation:
                     box = cv2.boxPoints(rect)
                     box = np.int0(box)
                     print(box[0], box[1], box[2], box[3])
-
-                    # fix it, if box[0] = 144 of box[1] = 256, index are not in range
-                    # if box[0] >= 256:
-                    #     box[0] = 255
-                    # if box[1] >= 144:
-                    #     box[1] = 143
-                    # l = 0
-                    # if box[1] + box[3] >= 144:
-                    #     l = 143
-                    # if box[0] + box[2] >= 256:
-                    #     l = 255
 
                     # get world position of from pixels
                     print(img_pc.shape)

@@ -6,8 +6,6 @@ from disciplines.cargo import cargo_init
 from disciplines.formation import formation_init
 from disciplines.race import race_init
 from disciplines.nrace import nrace_init
-from disciplines.grace import grace_init
-from disciplines.exp_race import exp_init
 import rospy
 
 
@@ -39,9 +37,7 @@ def main():
     leagues = {
         "formation": formation_init,
         "race": race_init,
-        "grace": grace_init,
         "nrace": nrace_init,
-        "exp_race": exp_init,
         "afs": afs_init,
         "cargo": cargo_init
     }

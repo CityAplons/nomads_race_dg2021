@@ -1,32 +1,9 @@
-import copy
-import math
-import bezier
+#PRAGMA: TYPO
+
 import open3d as o3d
-import matplotlib.pyplot as plt
-from scipy.spatial.transform import Rotation as Rot
 import numpy as np
 
 from utils.helpers import *
-
-# # RRT* Pseudo Code
-
-# # Rad = r
-# # G(V,E) //Graph containing edges and vertices
-# # For itr in range(0…n)
-# #     Xnew = RandomPosition()
-# #     If Obstacle(Xnew) == True, try again
-# #     Xnearest = Nearest(G(V,E),Xnew)
-# #     Cost(Xnew) = Distance(Xnew,Xnearest)
-# #     Xbest,Xneighbors = findNeighbors(G(V,E),Xnew,Rad)
-# #     Link = Chain(Xnew,Xbest)
-# #     For x’ in Xneighbors
-# #         If Cost(Xnew) + Distance(Xnew,x’) < Cost(x’)
-# #             Cost(x’) = Cost(Xnew)+Distance(Xnew,x’)
-# #             Parent(x’) = Xnew
-# #             G += {Xnew,x’}
-# #     G += Link
-# # Return G
-
 
 class RRTStar:
 
@@ -66,13 +43,6 @@ class RRTStar:
             return None
 
     def steer(self, start: Node, end: Node):
-        # nodes = np.array([
-        #     start.position,
-        #     end.position
-        # ]).T
-        # curve = bezier.Curve.from_nodes(nodes)
-        # t = np.linspace(0.0, 1.0, self.res)
-        # return curve.evaluate_multi(t).T, curve.length
         length = euclidean_distance(start.position, end.position)
         path = np.linspace(start.position, end.position, self.res)
         return path, length
@@ -172,7 +142,4 @@ class RRTStar:
         return None
 
     def smooth_path(self, path):
-        nodes = np.array(path).T
-        curve = bezier.Curve.from_nodes(nodes)
-        t = np.linspace(0.0, 1.0, self.res*len(path))
-        return list(curve.evaluate_multi(t).T)
+        return [ np.linspace(path[i-1], path[i], self.res) for i in range(1, len(path)) ]
